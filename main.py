@@ -22,6 +22,7 @@ LIVES = 3
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
 clock = pygame.time.Clock()
 
+
 # Chargement des images
 def load_image(path, default_size=None):
     if os.path.exists(path):
@@ -33,11 +34,16 @@ def load_image(path, default_size=None):
         print(f"Image introuvable : {path}")
         return pygame.Surface((50, 50))
 
+
 BACKGROUND_IMG = load_image("background.png", (WIDTH, HEIGHT))
 BIRD_IMG = load_image("bird.png", (50, 35))
-PIPE_IMG = load_image("pipe.png", (PIPE_WIDTH, 200))
+PIPE_IMG = load_image("pipe.png")  # Chargement sans redimensionnement initial
 PIPE_IMG_INV = pygame.transform.flip(PIPE_IMG, False, True)
 HEART_IMG = load_image("heart.png", (30, 30))
+
+# Chargement de la police
+pygame.font.init()
+font = pygame.font.SysFont("Arial", 30)
 
 # Q-Learning
 STATE_BINS = (10, 10)
@@ -56,11 +62,13 @@ try:
 except FileNotFoundError:
     Q_table = np.zeros(STATE_BINS + (len(ACTIONS),))
 
+
 def discretize_state(bird_y, pipe_x, pipe_y):
     return (
         min(STATE_BINS[0] - 1, max(0, int(bird_y / HEIGHT * STATE_BINS[0]))),
         min(STATE_BINS[1] - 1, max(0, int(pipe_x / WIDTH * STATE_BINS[1]))),
     )
+
 
 class FlappyBird:
     def __init__(self):
@@ -70,19 +78,25 @@ class FlappyBird:
         self.bird_y = HEIGHT // 2
         self.bird_velocity = 0
         self.pipe_x = WIDTH
-        self.pipe_y = random.randint(100, HEIGHT - PIPE_GAP - 100)
+        self.pipe_y = random.randint(50, HEIGHT - PIPE_GAP - 50)  # Plage élargie
         self.score = 0
         self.lives = LIVES
         return discretize_state(self.bird_y, self.pipe_x, self.pipe_y)
 
     def check_collision(self):
         bird_rect = pygame.Rect(BIRD_X, self.bird_y, 50, 35)
-        pipe_rect_top = pygame.Rect(self.pipe_x, 0, PIPE_WIDTH,
-                                    self.pipe_y - 100)  # Ajuster la hauteur du tuyau supérieur
-        pipe_rect_bottom = pygame.Rect(self.pipe_x, self.pipe_y + PIPE_GAP, PIPE_WIDTH,
-                                       HEIGHT - (self.pipe_y + PIPE_GAP + 100))  # Ajuster la hauteur du tuyau inférieur
 
-        return bird_rect.colliderect(pipe_rect_top) or bird_rect.colliderect(pipe_rect_bottom) or self.bird_y < 0 or self.bird_y > HEIGHT - 35
+        # Rectangles de collision ajustés
+        pipe_rect_top = pygame.Rect(self.pipe_x, 0, PIPE_WIDTH, self.pipe_y)
+        pipe_rect_bottom = pygame.Rect(self.pipe_x,
+                                       self.pipe_y + PIPE_GAP,
+                                       PIPE_WIDTH,
+                                       HEIGHT - (self.pipe_y + PIPE_GAP))
+
+        return (bird_rect.colliderect(pipe_rect_top) or
+                bird_rect.colliderect(pipe_rect_bottom) or
+                self.bird_y < 0 or
+                self.bird_y > HEIGHT - 35)
 
     def step(self, action):
         collision = False
@@ -92,14 +106,13 @@ class FlappyBird:
         self.bird_velocity += GRAVITY
         self.bird_y += self.bird_velocity
 
-        # Déplacement du tuyau
+        # Déplacement et régénération des tuyaux
         self.pipe_x -= PIPE_SPEED
         if self.pipe_x < -PIPE_WIDTH:
             self.pipe_x = WIDTH
-            self.pipe_y = random.randint(100, HEIGHT - PIPE_GAP - 100)
+            self.pipe_y = random.randint(50, HEIGHT - PIPE_GAP - 50)
             self.score += 1
 
-        # Gestion des collisions et des vies
         if self.check_collision():
             self.lives -= 1
             collision = True
@@ -107,7 +120,7 @@ class FlappyBird:
                 self.bird_y = HEIGHT // 2
                 self.bird_velocity = 0
                 self.pipe_x = WIDTH
-                self.pipe_y = random.randint(100, HEIGHT - PIPE_GAP - 100)
+                self.pipe_y = random.randint(50, HEIGHT - PIPE_GAP - 50)
 
         reward = 2 if not collision else -20
         done = self.lives <= 0
@@ -117,19 +130,33 @@ class FlappyBird:
     def render(self):
         screen.blit(BACKGROUND_IMG, (0, 0))
         screen.blit(BIRD_IMG, (BIRD_X, self.bird_y))
-        screen.blit(PIPE_IMG_INV, (self.pipe_x, 0))
-        screen.blit(PIPE_IMG, (self.pipe_x, self.pipe_y + PIPE_GAP))
+
+        # Tuyau supérieur avec redimensionnement dynamique
+        upper_pipe_height = self.pipe_y
+        scaled_upper = pygame.transform.scale(PIPE_IMG, (PIPE_WIDTH, upper_pipe_height))
+        scaled_upper_inv = pygame.transform.flip(scaled_upper, False, True)
+        screen.blit(scaled_upper_inv, (self.pipe_x, 0))
+
+        # Tuyau inférieur avec redimensionnement dynamique
+        lower_pipe_height = HEIGHT - (self.pipe_y + PIPE_GAP)
+        scaled_lower = pygame.transform.scale(PIPE_IMG, (PIPE_WIDTH, lower_pipe_height))
+        screen.blit(scaled_lower, (self.pipe_x, self.pipe_y + PIPE_GAP))
 
         # Affichage des vies
         for i in range(self.lives):
             screen.blit(HEART_IMG, (WIDTH - 40 - (i * 35), 10))
 
+        # Affichage du score
+        score_text = font.render(f"Score: {self.score}", True, (255, 255, 255))
+        screen.blit(score_text, (10, 10))
+
         pygame.display.flip()
         clock.tick(FPS)
 
+
 # Entraînement
 game = FlappyBird()
-for episode in range(10000):
+for episode in range(3000):
     state = game.reset()
     done = False
     while not done:
@@ -141,7 +168,7 @@ for episode in range(10000):
 
         new_state, reward, done = game.step(action)
         Q_table[state][action] = (1 - LEARNING_RATE) * Q_table[state][action] + LEARNING_RATE * (
-            reward + DISCOUNT_FACTOR * np.max(Q_table[new_state])
+                reward + DISCOUNT_FACTOR * np.max(Q_table[new_state])
         )
         state = new_state
 
