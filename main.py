@@ -2,6 +2,7 @@ import pygame
 import random
 import numpy as np
 import pickle
+import os
 
 # Initialisation de Pygame
 pygame.init()
@@ -9,34 +10,45 @@ pygame.init()
 # Paramètres du jeu
 WIDTH, HEIGHT = 400, 600
 BIRD_X = 50
-GRAVITY = 1
+GRAVITY = 0.8
 JUMP_STRENGTH = -10
-PIPE_GAP = 150
-PIPE_WIDTH = 70
-PIPE_SPEED = 3
+PIPE_GAP = 220
+PIPE_WIDTH = 60
+PIPE_SPEED = 2.5
 FPS = 30
-
-# Couleurs
-WHITE = (255, 255, 255)
-GREEN = (0, 255, 0)
-BLUE = (0, 0, 255)
+LIVES = 3
 
 # Initialisation de l'écran
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
 clock = pygame.time.Clock()
 
-# Définition des états pour Q-Learning
-STATE_BINS = (10, 10)  # Discrétisation de l'espace d'état
+# Chargement des images
+def load_image(path, default_size=None):
+    if os.path.exists(path):
+        img = pygame.image.load(path).convert_alpha()
+        if default_size:
+            img = pygame.transform.scale(img, default_size)
+        return img
+    else:
+        print(f"Image introuvable : {path}")
+        return pygame.Surface((50, 50))
+
+BACKGROUND_IMG = load_image("background.png", (WIDTH, HEIGHT))
+BIRD_IMG = load_image("bird.png", (50, 35))
+PIPE_IMG = load_image("pipe.png", (PIPE_WIDTH, 200))
+PIPE_IMG_INV = pygame.transform.flip(PIPE_IMG, False, True)
+HEART_IMG = load_image("heart.png", (30, 30))
+
+# Q-Learning
+STATE_BINS = (10, 10)
 LEARNING_RATE = 0.1
 DISCOUNT_FACTOR = 0.9
-EXPLORATION_PROB = 1.0  # Épsilon
+EXPLORATION_PROB = 1.0
 EXPLORATION_DECAY = 0.995
 EXPLORATION_MIN = 0.01
+ACTIONS = [0, 1]
 
-# Actions possibles
-ACTIONS = [0, 1]  # 0 = ne rien faire, 1 = sauter
-
-# Chargement/sauvegarde du Q-table
+# Chargement du Q-table
 Q_TABLE_FILE = "q_table.pkl"
 try:
     with open(Q_TABLE_FILE, "rb") as f:
@@ -44,15 +56,11 @@ try:
 except FileNotFoundError:
     Q_table = np.zeros(STATE_BINS + (len(ACTIONS),))
 
-
-def discretize_state(bird_y, bird_velocity, pipe_x, pipe_y):
-    """Convertit l'état continu en un état discret."""
-    state = (
+def discretize_state(bird_y, pipe_x, pipe_y):
+    return (
         min(STATE_BINS[0] - 1, max(0, int(bird_y / HEIGHT * STATE_BINS[0]))),
         min(STATE_BINS[1] - 1, max(0, int(pipe_x / WIDTH * STATE_BINS[1]))),
     )
-    return state
-
 
 class FlappyBird:
     def __init__(self):
@@ -64,45 +72,68 @@ class FlappyBird:
         self.pipe_x = WIDTH
         self.pipe_y = random.randint(100, HEIGHT - PIPE_GAP - 100)
         self.score = 0
-        return discretize_state(self.bird_y, self.bird_velocity, self.pipe_x, self.pipe_y)
+        self.lives = LIVES
+        return discretize_state(self.bird_y, self.pipe_x, self.pipe_y)
+
+    def check_collision(self):
+        bird_rect = pygame.Rect(BIRD_X, self.bird_y, 50, 35)
+        pipe_rect_top = pygame.Rect(self.pipe_x, 0, PIPE_WIDTH,
+                                    self.pipe_y - 100)  # Ajuster la hauteur du tuyau supérieur
+        pipe_rect_bottom = pygame.Rect(self.pipe_x, self.pipe_y + PIPE_GAP, PIPE_WIDTH,
+                                       HEIGHT - (self.pipe_y + PIPE_GAP + 100))  # Ajuster la hauteur du tuyau inférieur
+
+        return bird_rect.colliderect(pipe_rect_top) or bird_rect.colliderect(pipe_rect_bottom) or self.bird_y < 0 or self.bird_y > HEIGHT - 35
 
     def step(self, action):
-        # Appliquer la physique
+        collision = False
         if action == 1:
             self.bird_velocity = JUMP_STRENGTH
+
         self.bird_velocity += GRAVITY
         self.bird_y += self.bird_velocity
 
-        # Déplacer le tuyau
+        # Déplacement du tuyau
         self.pipe_x -= PIPE_SPEED
         if self.pipe_x < -PIPE_WIDTH:
             self.pipe_x = WIDTH
             self.pipe_y = random.randint(100, HEIGHT - PIPE_GAP - 100)
             self.score += 1
 
-        # Vérifier la collision
-        if self.bird_y <= 0 or self.bird_y >= HEIGHT:
-            return discretize_state(self.bird_y, self.bird_velocity, self.pipe_x, self.pipe_y), -100, True
-        if self.pipe_x < BIRD_X < self.pipe_x + PIPE_WIDTH and not (self.pipe_y < self.bird_y < self.pipe_y + PIPE_GAP):
-            return discretize_state(self.bird_y, self.bird_velocity, self.pipe_x, self.pipe_y), -100, True
+        # Gestion des collisions et des vies
+        if self.check_collision():
+            self.lives -= 1
+            collision = True
+            if self.lives > 0:
+                self.bird_y = HEIGHT // 2
+                self.bird_velocity = 0
+                self.pipe_x = WIDTH
+                self.pipe_y = random.randint(100, HEIGHT - PIPE_GAP - 100)
 
-        return discretize_state(self.bird_y, self.bird_velocity, self.pipe_x, self.pipe_y), 1, False
+        reward = 2 if not collision else -20
+        done = self.lives <= 0
+
+        return discretize_state(self.bird_y, self.pipe_x, self.pipe_y), reward, done
 
     def render(self):
-        screen.fill(WHITE)
-        pygame.draw.rect(screen, BLUE, (BIRD_X, self.bird_y, 30, 30))
-        pygame.draw.rect(screen, GREEN, (self.pipe_x, 0, PIPE_WIDTH, self.pipe_y))
-        pygame.draw.rect(screen, GREEN, (self.pipe_x, self.pipe_y + PIPE_GAP, PIPE_WIDTH, HEIGHT))
+        screen.blit(BACKGROUND_IMG, (0, 0))
+        screen.blit(BIRD_IMG, (BIRD_X, self.bird_y))
+        screen.blit(PIPE_IMG_INV, (self.pipe_x, 0))
+        screen.blit(PIPE_IMG, (self.pipe_x, self.pipe_y + PIPE_GAP))
+
+        # Affichage des vies
+        for i in range(self.lives):
+            screen.blit(HEART_IMG, (WIDTH - 40 - (i * 35), 10))
+
         pygame.display.flip()
         clock.tick(FPS)
 
-
-# Entraînement avec Q-Learning
+# Entraînement
 game = FlappyBird()
 for episode in range(10000):
     state = game.reset()
     done = False
     while not done:
+        pygame.event.pump()
         if random.uniform(0, 1) < EXPLORATION_PROB:
             action = random.choice(ACTIONS)
         else:
@@ -110,25 +141,30 @@ for episode in range(10000):
 
         new_state, reward, done = game.step(action)
         Q_table[state][action] = (1 - LEARNING_RATE) * Q_table[state][action] + LEARNING_RATE * (
-                    reward + DISCOUNT_FACTOR * np.max(Q_table[new_state]))
+            reward + DISCOUNT_FACTOR * np.max(Q_table[new_state])
+        )
         state = new_state
 
     EXPLORATION_PROB = max(EXPLORATION_MIN, EXPLORATION_PROB * EXPLORATION_DECAY)
 
-# Sauvegarde de la Q-table
+# Sauvegarde du Q-table
 with open(Q_TABLE_FILE, "wb") as f:
     pickle.dump(Q_table, f)
 
 # Mode jeu
 running = True
-game.reset()
+game = FlappyBird()
 while running:
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             running = False
 
-    action = np.argmax(Q_table[discretize_state(game.bird_y, game.bird_velocity, game.pipe_x, game.pipe_y)])
-    game.step(action)
+    action = np.argmax(Q_table[discretize_state(game.bird_y, game.pipe_x, game.pipe_y)])
+    _, _, done = game.step(action)
     game.render()
+
+    if done:
+        print("Game Over! Score:", game.score)
+        game.reset()
 
 pygame.quit()
